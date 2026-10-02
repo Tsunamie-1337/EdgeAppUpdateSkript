@@ -6,6 +6,8 @@
 !LICENSE
 !DE-IEM-AppInstaller.ps1
 !EN-IEM-AppInstaller.ps1
+!Start-DE.cmd
+!Start-EN.cmd
 
 # logs/-Ordner bleibt als Platzhalter erhalten, die eigentlichen Lauf-Logs
 # darin (viele, gross, nicht diff-relevant, teils mit echten URLs/Benutzern)
