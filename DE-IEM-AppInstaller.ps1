@@ -1892,6 +1892,7 @@ function Invoke-StateConfirm {
     }
     Write-Host "  Operation: $($script:Operation)" -ForegroundColor White
     Write-Host "  Geraete:   $($script:TargetDevices.Count)" -ForegroundColor White
+    Write-Host ("  Batches:   {0} a max. {1} Geraete" -f [math]::Ceiling($script:TargetDevices.Count / $script:BatchSize), $script:BatchSize) -ForegroundColor White
     Write-Host ''
     foreach ($d in $script:TargetDevices) {
         $color = switch ($d.OnlineState) { 'ONLINE' { 'Gray' } 'OFFLINE' { 'Red' } default { 'DarkYellow' } }
@@ -1940,14 +1941,22 @@ function Invoke-StateConfirm {
 # REGION: State - Ausfuehrung
 # ─────────────────────────────────────────────────────────────────────────────
 
+function Split-IntoBatches {
+    <# Teilt eine Liste in Gruppen a max. $script:BatchSize Elemente
+       (gilt fuer App- und Firmware-Auftraege gleichermassen). #>
+    param([object[]]$Items)
+    $batches = @()
+    for ($i = 0; $i -lt $Items.Count; $i += $script:BatchSize) {
+        $batches += , @($Items | Select-Object -Skip $i -First $script:BatchSize)
+    }
+    return , $batches
+}
+
 function Invoke-StateExecute {
     Write-Header 'Schritt 5 - Ausfuehrung'
     Write-LogSeparator 'Ausfuehrung'
 
-    $batches = @()
-    for ($i = 0; $i -lt $script:TargetDevices.Count; $i += $script:BatchSize) {
-        $batches += , @($script:TargetDevices | Select-Object -Skip $i -First $script:BatchSize)
-    }
+    $batches = Split-IntoBatches -Items $script:TargetDevices
 
     Write-Info ("{0} Geraet(e) in {1} Batch(es) a max. {2}." -f `
         $script:TargetDevices.Count, $batches.Count, $script:BatchSize) -Color Cyan
@@ -2507,8 +2516,9 @@ function New-FirmwareDeviceRows {
 function Invoke-FirmwareUpdateBatch {
     <#
     .SYNOPSIS
-        Reicht Firmware-Updates ein (echtes Batch-API, ein Aufruf fuer alle
-        Geraete) und wartet auf Abschluss.
+        Reicht Firmware-Updates fuer EINEN Batch ein (echtes Batch-API, ein
+        Aufruf fuer alle Geraete des Batches) und wartet auf Abschluss. Die
+        Aufteilung in Batches a $script:BatchSize erfolgt in Invoke-StateFirmware.
     .DESCRIPTION
         Nutzt Submit-FirmwareMassUpdate/Get-FirmwareUpdateInstance (siehe
         dort) statt iectl - 'iectl device firmware update' kann auf diesem
@@ -2547,7 +2557,7 @@ function Invoke-FirmwareUpdateBatch {
         })
     }
 
-    Write-Step "Reiche Firmware-Update fuer $($toRun.Count) Geraet(e) in einem Batch ein..."
+    Write-Step "Reiche Firmware-Update fuer $($toRun.Count) Geraet(e) ein..."
     Write-Warn 'Die Geraete starten waehrend des Updates neu - kurzzeitiger Verbindungsabbruch ist normal.'
 
     $submitItems = @($toRun | ForEach-Object {
@@ -2713,6 +2723,7 @@ function Invoke-StateFirmware {
 
     Write-Header 'Firmware-Update - Bestaetigung'
     Write-Host "  Geraete: $($selected.Count)" -ForegroundColor White
+    Write-Host ("  Batches: {0} a max. {1} Geraete (nacheinander)" -f [math]::Ceiling($selected.Count / $script:BatchSize), $script:BatchSize) -ForegroundColor White
     Write-Host ''
     foreach ($d in $selected) {
         $color = switch ($d.OnlineState) { 'ONLINE' { 'Gray' } 'OFFLINE' { 'Red' } default { 'DarkYellow' } }
@@ -2734,7 +2745,20 @@ function Invoke-StateFirmware {
 
     Write-Header 'Firmware-Update laeuft'
     $offlineIds = @($selected | Where-Object { $_.OnlineState -ne 'ONLINE' } | ForEach-Object { $_.DeviceId })
-    $results = Invoke-FirmwareUpdateBatch -Rows $selected -OfflineDeviceIds $offlineIds
+    $batches = Split-IntoBatches -Items $selected
+    Write-Info ("{0} Geraet(e) in {1} Batch(es) a max. {2}." -f `
+        $selected.Count, $batches.Count, $script:BatchSize) -Color Cyan
+
+    # Batches nacheinander: der naechste startet erst, wenn der vorige
+    # abgeschlossen ist - so ist nie mehr als ein Batch gleichzeitig im Neustart.
+    $results = @()
+    $batchNo = 0
+    foreach ($batch in $batches) {
+        $batchNo++
+        Write-Header "Firmware-Batch $batchNo/$($batches.Count)  ($($batch.Count) Geraete)"
+        Write-Log "Firmware-Batch $batchNo/$($batches.Count): $(($batch.DeviceName) -join ', ')" 'INFO'
+        $results += @(Invoke-FirmwareUpdateBatch -Rows $batch -OfflineDeviceIds $offlineIds)
+    }
 
     Write-Header 'Firmware-Update - Ergebnis'
     $okCount = @($results | Where-Object Ok).Count
@@ -2778,6 +2802,8 @@ $script:Api = New-ApiProfile -Version $ApiVersion
 
 Initialize-Log
 Write-Success "iectl gefunden. API-Modus: $($script:Api.Version) ($($script:Api.Root))"
+Write-Info "Batch-Groesse: max. $($script:BatchSize) Geraete pro Batch (App- und Firmware-Auftraege)." -Color Cyan
+Write-Info 'Anpassbar in Start-DE.cmd (Zeile "set BATCHSIZE=10", erlaubt 1-100) oder per Parameter -BatchSize.' -Color DarkGray
 Write-Log "Start | API=$($script:Api.Version) | BatchSize=$($script:BatchSize) | MaxParallel=$($script:MaxParallel) | JobWaitTimeout=$($script:JobWaitTimeoutSec)s" 'INFO'
 
 # ─────────────────────────────────────────────────────────────────────────────
